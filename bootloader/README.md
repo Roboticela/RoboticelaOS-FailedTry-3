@@ -1,0 +1,173 @@
+# RoboBootloader — RoboticelaOS Stage 01
+
+The UEFI bootloader for RoboticelaOS. It shows a clean, modern black boot
+screen (logo + progress bar), then loads an ELF64 x86-64 kernel, hands it a
+versioned `RoboBootInfo` structure, exits UEFI boot services, and jumps to the
+kernel entry point.
+
+This component is **fully standalone**: it has its own build system, its own
+tests, and its own QEMU preview environment. Nothing else in RoboticelaOS is
+required to build, run, or test it.
+
+---
+
+## What it looks like
+
+Pure-black screen, the Roboticela logo centered at ~46% of screen height, and
+a slim rounded progress bar at ~61% height (blue fill `#2DA4FE`, dark track
+`#313335`, ~31% of screen width). No boot text, no logs — exactly like a
+modern OS boot splash. All diagnostics go to the serial port in debug mode.
+
+The logo, layout proportions, and colors follow the reference image in
+`assets/reference.png`.
+
+## Supported platform
+
+| | |
+|---|---|
+| Architecture | x86-64 / AMD64 |
+| Firmware | UEFI only (PE/COFF `EFI_APPLICATION`) |
+| Output | `BOOTX64.EFI` |
+| Kernel format | ELF64, x86-64, statically linked (PT_LOAD segments) |
+| Logo format | 32-bit uncompressed BMP (bottom-up or top-down) |
+
+BIOS/Legacy boot, ARM, and other architectures are out of scope for Stage 01.
+
+## Prerequisites
+
+- **clang + LLD** (any recent version; produces the UEFI PE binary directly)
+- **GNU make**
+- **Python 3.8+** (disk-image and asset tooling; no third-party packages needed)
+- **QEMU** (system x86-64) with **EDK2/OVMF firmware** for the visual preview
+
+On Windows/MSYS2 the Makefile auto-detects clang at
+`/c/CLang/clang+llvm-18.1.8-x86_64-pc-windows-msvc/bin` and QEMU at
+`C:\Program Files\qemu`. Override with `CLANG=`, `LLD_LINK=`, `QEMU=` if yours
+live elsewhere.
+
+## Build
+
+```bash
+make            # or: make release   ->  build/BOOTX64.EFI
+make clean      # remove all build outputs
+make debug      # build with serial diagnostics always on (see below)
+```
+
+The result is `build/BOOTX64.EFI`, a standard UEFI application.
+
+## Test
+
+```bash
+make test       # host unit tests for config parser, BMP decoder, ELF loader
+```
+
+43 automated host tests cover: valid/invalid/missing/oversized inputs for
+`boot.cfg` parsing, BMP decoding (truncation, bad magic, absurd dimensions,
+padding, orientation), and the ELF64 loader (bad magic, 32-bit, wrong arch,
+no PT_LOAD, overflowing segments, bogus entry point).
+
+## QEMU preview
+
+```bash
+make image      # build/robo-disk.img: GPT disk with an ESP containing
+                #   EFI/BOOT/BOOTX64.EFI, RoboBoot/{robokernel,logo.bmp,boot.cfg}
+make run        # boot the image in QEMU with a visible window
+make run-headless
+```
+
+The `make run` scripts locate OVMF automatically. Common locations are
+probed (`C:\Program Files\qemu\share`, `/usr/share/OVMF`, etc.). If yours is
+elsewhere:
+
+```bash
+OVMF_CODE=/path/to/OVMF_CODE.fd OVMF_VARS=/path/to/OVMF_VARS.fd make run
+```
+
+`boot.cfg` inside the image defaults to `test=1`, which holds the finished
+boot screen for ~15 s so you can actually look at it (and screenshot it),
+then hands off to the test kernel.
+
+### Capturing the boot screen
+
+`screendump.sh` talks to a QEMU monitor socket and saves the framebuffer:
+
+```bash
+bash tools/screendump.sh build/screen.ppm          # while run-headless QEMU lives
+python -c "from PIL import Image; Image.open('build/screen.ppm').save('screen.png')"
+```
+
+(Headless QEMU is started with a monitor socket on
+`build/monitor.sock` by the runner script.)
+
+## Logo replacement
+
+1. Convert your logo to a **32-bit BMP** (uncompressed):
+   `python -c "from PIL import Image; Image.open('mylogo.png').save('assets/logo.bmp')"`
+   works fine (PIL writes 32-bit BMPs for RGBA input).
+2. Replace `assets/logo.bmp` (and optionally rerun `make` — the embedded
+   fallback logo is regenerated from it).
+3. `make image && make run`.
+
+Rules the bootloader enforces on any BMP (from disk or embedded):
+uncompressed, 32bpp, sane dimensions, `biSizeImage` consistent — anything
+else is rejected and the boot continues with the last good logo.
+
+## Boot disk layout
+
+```
+ESP (FAT32, GPT)
+└── RoboBoot/
+    ├── boot.cfg      # configuration (see below)
+    ├── logo.bmp      # splash logo
+    └── robokernel    # ELF64 kernel image
+```
+
+`\EFI\BOOT\BOOTX64.EFI` is the firmware entry.
+
+## Configuration
+
+`RoboBoot/boot.cfg` — `key = value` lines, `#` comments, UTF-8/ASCII:
+
+```
+kernel  = RoboBoot/robokernel
+logo    = RoboBoot/logo.bmp
+initfs  =                  # empty disables the optional initfs
+timeout = 3
+test    = 1                # hold the boot screen for inspection
+debug   = 1                # developer serial output (COM1, 115200 8N1)
+```
+
+Unknown keys, malformed values, or `..`/backslash/absolute paths in path
+values are rejected — the bootloader shows its error screen rather than
+guessing. Missing file = defaults.
+
+## Debug mode
+
+Three independent ways to get developer diagnostics on the COM1 serial port
+(QEMU shows it with `-serial file:...` or displays it):
+
+1. `boot.cfg`: `debug = 1`
+2. `make debug` (compile-time; serial starts at the very first instruction)
+3. Both together for the earliest possible output
+
+Production boot (`debug=0`, `make release`) never touches the serial port or
+shows any text on screen.
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| QEMU drops to the UEFI shell | The image lacks a GPT/ESP — use `make image` (not a superfloppy) |
+| Screen stays black | In test mode the bar finishes and holds; wait or check serial |
+| `FATAL: invalid kernel` | `robokernel` isn't a valid ELF64 x86-64 image |
+| No serial output | Use `make debug` (not just `debug=1` in boot.cfg) or check `-serial` is set |
+| Wrong colors | Only 32bpp BMPs are supported; convert the logo |
+| OVMF not found | Set `OVMF_CODE`/`OVMF_VARS` explicitly |
+
+## What this component is NOT
+
+No kernel, no filesystem implementation, no drivers, no compositor, no
+package manager, no network, no secure-boot signing (only an isolated
+extension point), no dependency on any other RoboticelaOS component. The
+only output contract is the documented `RoboBootInfo` handoff — see
+`ARCHITECTURE.md`.
