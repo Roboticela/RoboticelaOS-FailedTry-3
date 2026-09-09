@@ -17,20 +17,34 @@ CLANG ?= clang
 LD    ?= ld.lld
 NASM  ?= nasm
 PYTHON ?= python
+ifneq ($(shell command -v python 2>/dev/null),)
+PYTHON := python
+else ifneq ($(shell command -v python3 2>/dev/null),)
+PYTHON := python3
+endif
 LOGO_WIDTH ?= 1024
 
-# Locate clang if not on PATH (common MSYS2/Windows setups).
-# NOTE: plain `command -v` is not enough on MSYS2 where C:/MinGW/bin/ld.exe
-# exists but cannot link ELF/PE x86_64; probe for the real binaries instead.
-CLANG_DIR ?= /c/CLang/clang+llvm-18.1.8-x86_64-pc-windows-msvc/bin
+# Locate clang/lld if not already on PATH. Support both Windows and Linux LLVM
+# installs (for example MSYS2/Cygwin and distro packages such as
+# /usr/lib/llvm-*/bin), while avoiding false positives from unrelated ld.exe.
+CLANG_DIRS := /c/CLang/clang+llvm-18.1.8-x86_64-pc-windows-msvc/bin \
+              /usr/lib/llvm-*/bin /usr/local/opt/llvm/bin /usr/local/bin /usr/bin \
+              $(HOME)/.local/bin
 
-ifeq ($(shell test -x "$(CLANG_DIR)/clang.exe" && echo yes),yes)
-CLANG := $(CLANG_DIR)/clang
-LLD_LINK := $(CLANG_DIR)/lld-link
-else
+CLANG_BIN := $(firstword $(foreach d,$(CLANG_DIRS),$(wildcard $(d)/clang) $(wildcard $(d)/clang-*) $(wildcard $(d)/clang++)))
+ifeq ($(CLANG_BIN),)
 CLANG := clang
-LLD_LINK := lld-link
+else
+CLANG := $(CLANG_BIN)
 endif
+
+LLD_BIN := $(firstword $(foreach d,$(CLANG_DIRS),$(wildcard $(d)/lld-link) $(wildcard $(d)/ld.lld) $(wildcard $(d)/ld.lld-*)))
+ifeq ($(LLD_BIN),)
+LLD_LINK := lld-link
+else
+LLD_LINK := $(LLD_BIN)
+endif
+
 ifeq ($(shell command -v $(NASM) 2>/dev/null),)
 NASM := /c/msys64/usr/bin/nasm
 endif
@@ -146,10 +160,15 @@ TESTKERN_OBJS := $(OBJ)/testkernel-kernel.o
 
 testkernel: $(BUILD)/robokernel
 
-ifeq ($(shell test -x "$(CLANG_DIR)/ld.lld.exe" && echo yes),yes)
-LD := $(CLANG_DIR)/ld.lld
+ifeq ($(shell command -v ld.lld 2>/dev/null),)
+LD := $(firstword $(foreach d,$(CLANG_DIRS),$(wildcard $(d)/ld.lld) $(wildcard $(d)/ld.lld.exe)))
+ifneq ($(LD),)
+LD := $(LD)
 else
 LD := ld.lld
+endif
+else
+LD := $(shell command -v ld.lld)
 endif
 
 $(BUILD)/robokernel: $(TESTKERN_OBJS) testkernel/linker.ld | $(BUILD)
