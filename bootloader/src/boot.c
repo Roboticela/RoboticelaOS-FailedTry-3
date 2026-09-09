@@ -4,6 +4,7 @@
 #include "config/config.h"
 #include "graphics/framebuffer.h"
 #include "graphics/renderer.h"
+#include "graphics/progress.h"
 #include "image/bmp.h"
 #include "elf/elf_loader.h"
 #include "memory/memory.h"
@@ -24,14 +25,62 @@ static uint8_t *g_initfs_data = NULL;
 static uint64_t g_initfs_size = 0;
 static RoboBootInfo *g_bootinfo = NULL;
 
+/* Animation pacing: one progress frame is ~16 ms (62.5 fps). */
+#define UI_FRAME_US  16000u
+#define UI_FINISH_MAX_FRAMES 160u   /* hard cap ~2.5 s for the final glide */
+
+static void ui_wait_frame(void)
+{
+    bs()->Stall(UI_FRAME_US);
+}
+
+/* Advance the animated bar one frame and repaint it. Cheap; safe anywhere
+ * after fb_init. */
+static void ui_pump(void)
+{
+    if (!g_ui_ready)
+        return;
+    boot_progress_pump();
+    render_progress(&g_fb, boot_progress_get_displayed());
+}
+
+/* Complete the bar with a smooth ease-out glide: one 16 ms frame per step
+ * (remaining/6 each), so the sweep takes ~0.6-0.9 s no matter how fast the
+ * actual load work was. Bounded; the only deliberate wait in the boot flow.
+ * Slow boots skip most of it: byte progress has already pushed the bar ahead. */
+static void ui_finish_animation(void)
+{
+    uint32_t guard;
+    if (!g_ui_ready)
+        return;
+    boot_progress_finish();             /* request 1000 */
+    for (guard = 0; guard < UI_FINISH_MAX_FRAMES; guard++) {
+        if (boot_progress_get_displayed() >= 1000)
+            break;
+        ui_wait_frame();
+        ui_pump();
+    }
+}
+
 /* Embedded logo, generated into build/generated/logo_embed.S by the Makefile. */
 extern const uint8_t embedded_logo_start[];
 extern const uint8_t embedded_logo_end[];
 
 static void ui_stage(uint32_t per_mille)
 {
-    if (g_ui_ready)
-        render_progress(&g_fb, per_mille);
+    if (!g_ui_ready)
+        return;
+    boot_progress_set(per_mille);
+    ui_pump();
+}
+
+/* Progress callback from the chunked kernel read: fast, non-blocking - it
+ * only records byte progress and repaints the bar once per ~256 KiB chunk. */
+static void kernel_read_progress(uint64_t done, uint64_t total, void *ctx)
+{
+    (void)ctx;
+    boot_progress_span_update(BOOT_PROG_KERNEL_READ, done, total);
+    ui_pump();
 }
 
 static bool load_logo_image(const robo_config_t *cfg)
@@ -167,6 +216,7 @@ void boot_run(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     /* Disable the boot-services watchdog: we control the boot experience. */
     bs()->SetWatchdogTimer(0, 0, 0, NULL);
 
+    boot_progress_init();
     ui_stage(BOOT_PCT_START);
 
     /* --- framebuffer --- */
@@ -222,11 +272,27 @@ void boot_run(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         elf_load_result_t elf = {0, 0, 0};
         elf_result_t er;
 
-        if (!vol || !file_read_whole(vol, g_cfg.kernel_path, &kdata, &ksize)) {
+        if (!vol) {
             boot_fatal("kernel not found");
             return;
         }
-        ui_stage(BOOT_PCT_KERNEL_READ);
+        ui_stage(BOOT_PCT_KERNEL_FOUND);
+
+        /* Chunked, cooperative read: each chunk nudges the bar through its
+         * reserved span without blocking (callback just records progress). */
+        boot_progress_set_span(BOOT_PROG_KERNEL_READ,
+                               BOOT_PCT_KERNEL_FOUND, BOOT_PCT_KERNEL_READ_END);
+        {
+            EFI_FILE_PROTOCOL *kf = file_open(vol, g_cfg.kernel_path);
+            if (!kf || !file_read_all_progress(kf, &kdata, &ksize,
+                                               kernel_read_progress, NULL)) {
+                file_close(kf);
+                boot_fatal("kernel not found");
+                return;
+            }
+            file_close(kf);
+        }
+        ui_stage(BOOT_PCT_KERNEL_READ_END);
 
         er = elf_load(kdata, ksize, &elf);
         mem_free(kdata);
@@ -278,10 +344,27 @@ void boot_run(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             g_bootinfo = bi;
         }
 
-        /* --- test mode: hold the completed boot screen for inspection --- */
+        /* --- test mode: hold the boot screen for inspection --- */
         if (g_cfg.test_mode) {
-            debugf("TEST MODE: holding boot screen");
-            bs()->Stall(15000000); /* 15s: enough for screenshots at any res */
+            debugf("TEST MODE: holding boot screen (bar animates)");
+            boot_progress_finish();     /* request completion; keep animating */
+            {
+                uint32_t frames;
+                for (frames = 0; frames < UI_FINISH_MAX_FRAMES; frames++) {
+                    if (boot_progress_get_displayed() >= 1000)
+                        break;
+                    ui_wait_frame();
+                    ui_pump();
+                }
+                debugf("TEST MODE: bar complete after %u frames", frames);
+                /* Hold the finished screen for the remaining hold time. */
+                for (; frames < 900; frames++) {
+                    ui_wait_frame();
+                    ui_pump();
+                }
+            }
+        } else {
+            ui_finish_animation();
         }
 
         /* --- exit boot services --- */

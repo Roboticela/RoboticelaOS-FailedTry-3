@@ -638,6 +638,15 @@ EFI_FILE_PROTOCOL *file_open(EFI_FILE_PROTOCOL *volume, const char *path);
 bool file_read_whole(EFI_FILE_PROTOCOL *volume, const char *path,
                      uint8_t **out_data, uint64_t *out_size);
 
+/* Chunked read with a progress callback: after every chunk the callback gets
+ * (bytes_done, bytes_total, ctx). The callback must be fast and non-blocking
+ * (update UI state only); NULL disables reporting. Same guarantees and
+ * allocation behaviour as file_read_all. */
+typedef void (*file_progress_fn)(uint64_t done, uint64_t total, void *ctx);
+bool file_read_all_progress(EFI_FILE_PROTOCOL *f, uint8_t **out_data,
+                            uint64_t *out_size, file_progress_fn progress,
+                            void *ctx);
+
 void file_close(EFI_FILE_PROTOCOL *f);
 
 /* Find the ACPI RSDP (ACPI 2.0 preferred, 1.0 fallback). 0 if absent. */

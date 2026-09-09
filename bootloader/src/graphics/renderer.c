@@ -232,7 +232,7 @@ static void draw_char(fb_t *fb, uint32_t x, uint32_t y, char ch,
 {
     unsigned idx;
     const uint8_t *bits;
-    uint32_t gw, yoff, i;
+    uint32_t gw, yoff;
 
     if (ch < ROBOFONT_FIRST || ch >= ROBOFONT_FIRST + ROBOFONT_COUNT)
         return;

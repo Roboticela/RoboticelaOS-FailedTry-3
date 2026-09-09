@@ -24,6 +24,24 @@ height while the bar starts at ~57%, at every resolution. No boot text,
 no logs — exactly like a modern OS boot splash. All diagnostics go to the
 serial port in debug mode.
 
+### Animated progress
+
+The bar is driven by a small animation engine (`src/graphics/progress.c`)
+with Apple-style behaviour:
+
+- it **never blocks the boot**: the engine only computes values; real work
+  (config, kernel read, ELF load) runs untouched
+- after any stage jump it **glides smoothly** with an ease-out curve
+  (~0.5 s per sweep), so even an instant load looks like calm motion
+- the kernel read reserves the 45–60% span and **reports real byte
+  progress** chunk-by-chunk (`file_read_all_progress`), so on slow disks the
+  bar tracks the actual pace instead of jumping
+- the bar **never rewinds** and always completes at 100% with one final
+  glide (bounded to ~2.5 s) before the kernel handoff
+
+Fast boot = still a graceful sweep; slow boot = honest tracking. Both look
+smooth. The engine is host-tested (`make test`, `tests/progress_test.c`).
+
 ## Supported platform
 
 | | |

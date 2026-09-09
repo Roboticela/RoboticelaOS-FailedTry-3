@@ -134,6 +134,72 @@ bool file_read_all(EFI_FILE_PROTOCOL *f, uint8_t **out_data, uint64_t *out_size)
     return true;
 }
 
+/* Chunked read with progress callbacks. Whole-file semantics (same buffer
+ * layout as file_read_all), but reads in ~256 KiB chunks and invokes the
+ * callback after each chunk so the caller can animate UI. Never blocks:
+ * the callback itself must not. */
+#define READ_CHUNK_SIZE  (256u * 1024u)
+
+bool file_read_all_progress(EFI_FILE_PROTOCOL *f, uint8_t **out_data,
+                            uint64_t *out_size, file_progress_fn progress,
+                            void *ctx)
+{
+    EFI_STATUS s;
+    EFI_GUID fi_guid = EFI_FILE_INFO_ID;
+    UINTN fi_size = 0;
+    uint8_t *fi_buf = NULL;
+    uint64_t fsize = 0;
+    uint8_t *buf = NULL;
+    uint64_t done = 0;
+
+    if (!f || !out_data || !out_size)
+        return false;
+    *out_data = NULL;
+    *out_size = 0;
+
+    s = f->GetInfo(f, &fi_guid, &fi_size, NULL);
+    if (s != EFI_BUFFER_TOO_SMALL || fi_size < sizeof(EFI_FILE_INFO))
+        return false;
+    fi_buf = mem_alloc((uint64_t)fi_size);
+    if (!fi_buf)
+        return false;
+    s = f->GetInfo(f, &fi_guid, &fi_size, fi_buf);
+    if (EFI_ERROR(s)) {
+        mem_free(fi_buf);
+        return false;
+    }
+    fsize = *(uint64_t *)(fi_buf + 8);  /* EFI_FILE_INFO.FileSize */
+    mem_free(fi_buf);
+
+    if (fsize == 0 || fsize > ROBO_MAX_FILE_SIZE)
+        return false;
+
+    buf = mem_alloc(fsize + 1);
+    if (!buf)
+        return false;
+
+    while (done < fsize) {
+        UINTN chunk = fsize - done;
+        if (chunk > READ_CHUNK_SIZE)
+            chunk = READ_CHUNK_SIZE;
+        s = f->Read(f, &chunk, buf + done);
+        if (EFI_ERROR(s)) {
+            mem_free(buf);
+            return false;
+        }
+        if (chunk == 0)
+            break;                      /* short read; treat as EOF */
+        done += chunk;
+        if (progress)
+            progress(done, fsize, ctx);
+    }
+
+    buf[done] = 0;
+    *out_data = buf;
+    *out_size = done;
+    return true;
+}
+
 bool file_read_whole(EFI_FILE_PROTOCOL *volume, const char *path,
                      uint8_t **out_data, uint64_t *out_size)
 {

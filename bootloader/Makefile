@@ -77,6 +77,7 @@ UEFI_SRCS := $(SRC)/main.c \
              $(SRC)/memory/memory.c \
              $(SRC)/graphics/framebuffer.c \
              $(SRC)/graphics/renderer.c \
+             $(SRC)/graphics/progress.c \
              $(SRC)/font/robofont.c \
              $(SRC)/image/bmp.c \
              $(SRC)/config/config.c \
@@ -162,7 +163,7 @@ $(OBJ)/testkernel-kernel.o: testkernel/kernel.c | $(GEN)
 # ---------------------------------------------------------- host tests
 
 HOST_CC := $(CLANG)
-HOST_TESTS := cfg_test bmp_test elf_test
+HOST_TESTS := cfg_test bmp_test elf_test progress_test
 
 host-tests: $(patsubst %,$(BUILD)/host/%.run,$(HOST_TESTS))
 
@@ -178,6 +179,10 @@ $(BUILD)/host/bmp_test: tests/bmp_test.c $(SRC)/image/bmp.c $(SRC)/lib.c
 	$(HOST_CC) -O1 -Wall -Wextra -I$(SRC) $^ -o $@
 
 $(BUILD)/host/elf_test: tests/elf_test.c $(SRC)/elf/elf_loader.c $(SRC)/lib.c $(SRC)/debug.c
+	@mkdir -p $(BUILD)/host
+	$(HOST_CC) -O1 -Wall -Wextra -I$(SRC) $^ -o $@
+
+$(BUILD)/host/progress_test: tests/progress_test.c $(SRC)/graphics/progress.c
 	@mkdir -p $(BUILD)/host
 	$(HOST_CC) -O1 -Wall -Wextra -I$(SRC) $^ -o $@
 
