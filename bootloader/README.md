@@ -13,13 +13,16 @@ required to build, run, or test it.
 
 ## What it looks like
 
-Pure-black screen, the Roboticela logo centered at ~46% of screen height, and
-a slim rounded progress bar at ~61% height (blue fill `#2DA4FE`, dark track
-`#313335`, ~31% of screen width). No boot text, no logs — exactly like a
-modern OS boot splash. All diagnostics go to the serial port in debug mode.
-
-The logo, layout proportions, and colors follow the reference image in
-`assets/reference.png`.
+Pure-black screen, the Roboticela logo sized relative to the screen — its
+height is 18% of the screen height (Apple-style, so it keeps the same visual
+weight at every resolution), centred horizontally at ~42% of screen height —
+and a slim rounded progress bar below it: ~15% of the screen wide,
+screen-relative thickness (0.55% of height, clamped 4–16 px), centred at
+~57.5% height. Blue fill `#2DA4FE`, dark track `#313335`. The logo and the
+bar can never overlap: the logo's bottom edge stops at 51% of the screen
+height while the bar starts at ~57%, at every resolution. No boot text,
+no logs — exactly like a modern OS boot splash. All diagnostics go to the
+serial port in debug mode.
 
 ## Supported platform
 
@@ -47,13 +50,26 @@ live elsewhere.
 
 ## Build
 
+From the repository root (recommended):
+
+```bash
+./build-bootloader.sh             # firmware + test kernel + boot disk image
+./build-bootloader.sh test        # run the host unit tests
+./build-bootloader.sh debug       # firmware with serial diagnostics enabled
+./build-bootloader.sh clean       # remove all build outputs
+```
+
+(Windows CMD: `build-bootloader.cmd test` — same targets.)
+
+Or work directly inside `bootloader/`:
+
 ```bash
 make            # or: make release   ->  build/BOOTX64.EFI
 make clean      # remove all build outputs
 make debug      # build with serial diagnostics always on (see below)
 ```
 
-The result is `build/BOOTX64.EFI`, a standard UEFI application.
+The result is `bootloader/build/BOOTX64.EFI`, a standard UEFI application.
 
 ## Test
 
@@ -67,6 +83,21 @@ padding, orientation), and the ELF64 loader (bad magic, 32-bit, wrong arch,
 no PT_LOAD, overflowing segments, bogus entry point).
 
 ## QEMU preview
+
+From the repository root:
+
+```bash
+./run-bootloader.sh               # build if needed + open a QEMU window
+./run-bootloader.sh --headless    # headless boot; watch build/serial.log
+./run-bootloader.sh --screenshot  # headless boot, capture build/screen.png
+```
+
+(Windows CMD: `run-bootloader.cmd --screenshot` — same options.)
+
+The screenshot lands in `bootloader/build/screen.png` and shows the boot
+splash at its normal resolution.
+
+Or use make inside `bootloader/`:
 
 ```bash
 make image      # build/robo-disk.img: GPT disk with an ESP containing
@@ -89,24 +120,55 @@ then hands off to the test kernel.
 
 ### Capturing the boot screen
 
-`screendump.sh` talks to a QEMU monitor socket and saves the framebuffer:
+With the root script:
 
 ```bash
-bash tools/screendump.sh build/screen.ppm          # while run-headless QEMU lives
-python -c "from PIL import Image; Image.open('build/screen.ppm').save('screen.png')"
+./run-bootloader.sh --screenshot   # -> bootloader/build/screen.png
 ```
 
-(Headless QEMU is started with a monitor socket on
-`build/monitor.sock` by the runner script.)
+Or manually from a `run-headless` QEMU (monitor is a TCP socket on Windows,
+unix socket elsewhere):
+
+```bash
+bash tools/screendump.sh build/screen.png          # default monitor address
+bash tools/screendump.sh build/screen.png 127.0.0.1:4444   # explicit TCP
+```
 
 ## Logo replacement
 
-1. Convert your logo to a **32-bit BMP** (uncompressed):
-   `python -c "from PIL import Image; Image.open('mylogo.png').save('assets/logo.bmp')"`
-   works fine (PIL writes 32-bit BMPs for RGBA input).
-2. Replace `assets/logo.bmp` (and optionally rerun `make` — the embedded
-   fallback logo is regenerated from it).
-3. `make image && make run`.
+The logo's vector master is an SVG. The build generates the BMP from it
+automatically:
+
+```
+assets/logo.svg   --(make / generate-logo.py)-->   assets/logo.bmp
+        (rasterized 1024px, converted to 32-bit BMP)
+```
+
+`logo.bmp` is generated on every build that needs it (embedded fallback logo
+and boot disk image) and is git-ignored. Regenerate explicitly with:
+
+```bash
+make logo                              # inside bootloader/
+./build-bootloader.sh logo             # from the repo root
+LOGO_WIDTH=2048 make logo              # higher-res rasterization
+python tools/generate-logo.py --svg mylogo.svg --width 512   # one-off
+```
+
+To change the logo, replace `bootloader/assets/logo.svg` (or point the
+generator at another SVG) and rebuild. The BMP decoder accepts any 32-bit
+uncompressed BMP, so a hand-made BMP also works — just place it at
+`assets/logo.bmp` and `touch` it so the build picks it up:
+
+```bash
+python -c "from PIL import Image; Image.open('mylogo.png').save('bootloader/assets/logo.bmp')"
+```
+
+Prerequisites for the SVG step: `pip install cairosvg` (or ImageMagick /
+rsvg-convert / Inkscape — the generator picks whichever it finds).
+
+The logo is rendered sized relative to the screen: height = 18% of screen
+height (width capped at 30% of screen width), centred at 42% of screen
+height, never upscaled, downscaled with a box filter, transparency respected.
 
 Rules the bootloader enforces on any BMP (from disk or embedded):
 uncompressed, 32bpp, sane dimensions, `biSizeImage` consistent — anything

@@ -1,12 +1,19 @@
 /* robobootloader - boot screen renderer.
  *
- * Implements the visual design from assets/reference.png:
+ * Apple-style splash, exactly like the macOS boot screen:
  *   - pure black background
- *   - logo centred horizontally, its centre at ~46.4% of screen height
- *   - progress bar centred, its centre at ~60.9% of screen height,
- *     ~31% of screen width, ~10px tall at 1024-wide reference (scaled),
+ *   - logo sized RELATIVE TO THE SCREEN: height = ~18% of screen height
+ *     (width capped at 30% of screen width for extreme aspect ratios),
+ *     centred horizontally, centre at ~42% of screen height
+ *   - progress bar centred, centre at ~57.5% of screen height,
+ *     ~15% of screen wide, ~0.55% of screen tall (clamped 4..16 px),
  *     fill #2DA4FE, track #313335, fully rounded ends
  *   - NO text on the normal boot screen
+ *
+ * No-overlap invariant: the logo bottom can never reach the bar.
+ *   logo bottom <= (0.42 + 0.18/2) * H = 0.51 * H
+ *   bar top     >= (0.575 * H) - ROBO_LAYOUT_BAR_MAX_H/2
+ * so the gap is >= ~6% of screen height at every resolution and aspect.
  *
  * Text exists only for the fatal-error screen and debug builds.
  */
@@ -18,13 +25,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Reference-derived layout constants (fractions of screen size). */
-#define ROBO_LAYOUT_LOGO_MAX_W       0.24   /* max logo width as fraction of screen width */
-#define ROBO_LAYOUT_LOGO_MAX_H       0.14   /* max logo height as fraction of screen height */
-#define ROBO_LAYOUT_LOGO_CY          0.464  /* logo centre, fraction of height */
-#define ROBO_LAYOUT_BAR_W            0.307  /* bar width, fraction of width */
-#define ROBO_LAYOUT_BAR_H            10     /* bar thickness at 1024-wide; scales mildly */
-#define ROBO_LAYOUT_BAR_CY           0.609  /* bar centre, fraction of height */
+/* Apple-style relative layout constants (fractions of screen size). */
+#define ROBO_LAYOUT_LOGO_H          0.18   /* logo height, fraction of screen height */
+#define ROBO_LAYOUT_LOGO_MAX_W      0.30   /* safety cap: logo width, fraction of screen width */
+#define ROBO_LAYOUT_LOGO_CY         0.42   /* logo centre, fraction of screen height */
+#define ROBO_LAYOUT_BAR_W           0.15   /* bar width, fraction of screen width */
+#define ROBO_LAYOUT_BAR_H           0.0055 /* bar thickness, fraction of screen height */
+#define ROBO_LAYOUT_BAR_MIN_H       4      /* px floor: stays visible on tiny panels */
+#define ROBO_LAYOUT_BAR_MAX_H       16     /* px ceiling: stays slim on 4K/8K panels */
+#define ROBO_LAYOUT_BAR_CY          0.575  /* bar centre, fraction of screen height */
 
 /* Reference colours. */
 #define ROBO_COLOR_BAR_FILL_R  0x2D
@@ -56,8 +65,10 @@ void render_fatal_error(fb_t *fb, const robo_image_t *logo);
 void render_debug_text(fb_t *fb, uint32_t x, uint32_t y, const char *text,
                        uint8_t r, uint8_t g, uint8_t b);
 
-/* Scale-to-fit helper: given image and screen dims, output drawn size.
- * Never upscales beyond 2x to avoid blur; never distorts. */
+/* Fit-to-screen helper: given image and screen dims, output drawn size.
+ * Targets ROBO_LAYOUT_LOGO_H of the screen height (width capped at
+ * ROBO_LAYOUT_LOGO_MAX_W of screen width), preserving aspect ratio;
+ * never upscales (keeps the logo crisp). */
 void render_fit_logo(uint32_t img_w, uint32_t img_h, uint32_t scr_w, uint32_t scr_h,
                      uint32_t *out_w, uint32_t *out_h);
 

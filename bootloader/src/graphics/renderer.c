@@ -25,8 +25,10 @@ static uint32_t sqrt_isq(uint32_t v)
     return res;
 }
 
-/* Filled circle used for the rounded bar ends. */
+/* Filled circle used for the rounded bar ends. Rows outside [y_min, y_max]
+ * are clipped so the caps never make the bar taller than bar_h. */
 static void draw_circle_fill(fb_t *fb, int32_t cx, int32_t cy, int32_t rad,
+                             int32_t y_min, int32_t y_max,
                              uint8_t r, uint8_t g, uint8_t b)
 {
     int32_t y;
@@ -35,10 +37,13 @@ static void draw_circle_fill(fb_t *fb, int32_t cx, int32_t cy, int32_t rad,
     for (y = -rad; y <= rad; y++) {
         int32_t dx = rad * rad - y * y;
         int32_t half;
+        int32_t py = cy + y;
         if (dx < 0)
             continue;
+        if (py < y_min || py > y_max)
+            continue;
         half = (int32_t)sqrt_isq((uint32_t)dx);
-        fb_fill_rect(fb, (uint32_t)(cx - half), (uint32_t)(cy + y),
+        fb_fill_rect(fb, (uint32_t)(cx - half), (uint32_t)py,
                      (uint32_t)(2 * half + 1), 1, r, g, b);
     }
 }
@@ -48,8 +53,11 @@ static void draw_circle_fill(fb_t *fb, int32_t cx, int32_t cy, int32_t rad,
 void render_fit_logo(uint32_t img_w, uint32_t img_h, uint32_t scr_w, uint32_t scr_h,
                      uint32_t *out_w, uint32_t *out_h)
 {
+    /* Target height is a fraction of the SCREEN HEIGHT (Apple-style: the logo
+     * scales relative to the screen, not to the source image). Width cap only
+     * guards extreme aspect ratios. Never upscale (keeps the logo crisp). */
+    uint64_t tgt_h = (uint64_t)((double)scr_h * ROBO_LAYOUT_LOGO_H);
     uint64_t max_w = (uint64_t)((double)scr_w * ROBO_LAYOUT_LOGO_MAX_W);
-    uint64_t max_h = (uint64_t)((double)scr_h * ROBO_LAYOUT_LOGO_MAX_H);
     uint64_t w = img_w, h = img_h;
     uint64_t scale_num = 1, scale_den = 1; /* drawn = img * num/den */
 
@@ -58,18 +66,16 @@ void render_fit_logo(uint32_t img_w, uint32_t img_h, uint32_t scr_w, uint32_t sc
         return;
     }
 
-    /* Fit within (max_w, max_h) preserving aspect ratio. Allow modest
-     * downscale only - never upscale (keeps the logo crisp). */
-    if (w > max_w) {
+    if (h > tgt_h) {
+        scale_num = tgt_h;
+        scale_den = h;
+    }
+    if (w * scale_num > max_w * scale_den) {
         scale_num = max_w;
         scale_den = w;
     }
-    if (h * scale_num > max_h * scale_den) {
-        scale_num = max_h;
-        scale_den = h;
-    }
     if (scale_num >= scale_den) {
-        /* no downscale needed */
+        /* smaller than target: draw 1:1, never upscale */
         w = img_w;
         h = img_h;
     } else {
@@ -82,7 +88,7 @@ void render_fit_logo(uint32_t img_w, uint32_t img_h, uint32_t scr_w, uint32_t sc
     *out_h = (uint32_t)h;
 }
 
-/* Nearest-neighbour scaled blit, centred at (cx_frac * screen_w, cy_frac * screen_h).
+/* Nearest-neighbour scaled blit, centred at (ROBO_LAYOUT_LOGO_CY * screen_h).
  * Clipping is handled inside fb_blit_px. */
 static void draw_logo(fb_t *fb, const robo_image_t *img)
 {
@@ -100,10 +106,10 @@ static void draw_logo(fb_t *fb, const robo_image_t *img)
         return;
     }
 
-    /* Nearest-neighbour resample (downscale only, keeps logo crisp enough) */
+    /* Box-filter resample (downscale only): averages every source-pixel box
+     * instead of point-sampling, so the shrunken logo stays smooth instead of
+     * crunchy (nearest drops whole features at ~6x reductions). */
     {
-        uint64_t x_ratio = ((uint64_t)img->width << 16) / dw;
-        uint64_t y_ratio = ((uint64_t)img->height << 16) / dh;
         uint8_t *dst = mem_alloc((uint64_t)dw * dh * 4);
         if (!dst) {
             /* fall back to 1:1 if we cannot allocate a scaled buffer */
@@ -113,14 +119,31 @@ static void draw_logo(fb_t *fb, const robo_image_t *img)
             return;
         }
         for (uint32_t y = 0; y < dh; y++) {
-            uint32_t sy = (uint32_t)(((uint64_t)y * y_ratio) >> 16);
-            const uint8_t *srow = img->pixels + (uint64_t)sy * img->pitch;
+            uint32_t sy0 = (uint32_t)(((uint64_t)y * img->height) / dh);
+            uint32_t sy1 = (uint32_t)((((uint64_t)y + 1) * img->height) / dh);
+            if (sy1 <= sy0)
+                sy1 = sy0 + 1;
             uint8_t *drow = dst + (uint64_t)y * dw * 4;
             for (uint32_t x = 0; x < dw; x++) {
-                uint32_t sx = (uint32_t)(((uint64_t)x * x_ratio) >> 16);
-                const uint8_t *s = srow + (uint64_t)sx * 4;
+                uint32_t sx0 = (uint32_t)(((uint64_t)x * img->width) / dw);
+                uint32_t sx1 = (uint32_t)((((uint64_t)x + 1) * img->width) / dw);
+                if (sx1 <= sx0)
+                    sx1 = sx0 + 1;
+                uint32_t sr = 0, sg = 0, sb = 0, sa = 0;
+                uint32_t n = 0;
+                for (uint32_t sy = sy0; sy < sy1; sy++) {
+                    const uint8_t *srow = img->pixels + (uint64_t)sy * img->pitch;
+                    for (uint32_t sx = sx0; sx < sx1; sx++) {
+                        const uint8_t *s = srow + (uint64_t)sx * 4;
+                        sr += s[0]; sg += s[1]; sb += s[2]; sa += s[3];
+                        n++;
+                    }
+                }
                 uint8_t *d = drow + (uint64_t)x * 4;
-                d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+                d[0] = (uint8_t)(sr / n);
+                d[1] = (uint8_t)(sg / n);
+                d[2] = (uint8_t)(sb / n);
+                d[3] = (uint8_t)(sa / n);
             }
         }
         dx = (fb->width >= dw) ? (fb->width - dw) / 2 : 0;
@@ -134,16 +157,23 @@ static void draw_logo(fb_t *fb, const robo_image_t *img)
 
 void render_progress(fb_t *fb, uint32_t per_mille)
 {
+    /* Apple-style: everything derives from the screen, so the bar keeps its
+     * proportions at any resolution. Thickness is screen-relative and clamped
+     * so it stays visible on tiny panels and slim on 4K/8K ones. */
     uint32_t bar_w = (uint32_t)((double)fb->width * ROBO_LAYOUT_BAR_W);
-    uint32_t bar_h = ROBO_LAYOUT_BAR_H;
+    uint32_t bar_h = (uint32_t)((double)fb->height * ROBO_LAYOUT_BAR_H);
     uint32_t bar_x, bar_y;
     uint32_t fill_w;
     uint32_t rad;
 
     if (bar_w < 8)
         bar_w = 8;
-    if (bar_h < 4)
-        bar_h = 4;
+    if (bar_h < ROBO_LAYOUT_BAR_MIN_H)
+        bar_h = ROBO_LAYOUT_BAR_MIN_H;
+    if (bar_h > ROBO_LAYOUT_BAR_MAX_H)
+        bar_h = ROBO_LAYOUT_BAR_MAX_H;
+    if (bar_w < bar_h)      /* never wider-than-tall inverted on tiny screens */
+        bar_w = bar_h;
 
     bar_x = (fb->width >= bar_w) ? (fb->width - bar_w) / 2 : 0;
     bar_y = (uint32_t)((double)fb->height * ROBO_LAYOUT_BAR_CY) - bar_h / 2;
@@ -156,8 +186,10 @@ void render_progress(fb_t *fb, uint32_t per_mille)
                  ROBO_COLOR_TRACK_R, ROBO_COLOR_TRACK_G, ROBO_COLOR_TRACK_B);
     rad = bar_h / 2;
     draw_circle_fill(fb, (int32_t)(bar_x + rad), (int32_t)(bar_y + rad), (int32_t)rad,
+                     (int32_t)bar_y, (int32_t)(bar_y + bar_h - 1),
                      ROBO_COLOR_TRACK_R, ROBO_COLOR_TRACK_G, ROBO_COLOR_TRACK_B);
     draw_circle_fill(fb, (int32_t)(bar_x + bar_w - rad), (int32_t)(bar_y + rad), (int32_t)rad,
+                     (int32_t)bar_y, (int32_t)(bar_y + bar_h - 1),
                      ROBO_COLOR_TRACK_R, ROBO_COLOR_TRACK_G, ROBO_COLOR_TRACK_B);
 
     /* Fill */
@@ -169,12 +201,15 @@ void render_progress(fb_t *fb, uint32_t per_mille)
             fb_fill_rect(fb, bar_x + rad, bar_y, fw - bar_h, bar_h,
                          ROBO_COLOR_BAR_FILL_R, ROBO_COLOR_BAR_FILL_G, ROBO_COLOR_BAR_FILL_B);
             draw_circle_fill(fb, (int32_t)(bar_x + rad), (int32_t)(bar_y + rad), (int32_t)rad,
+                             (int32_t)bar_y, (int32_t)(bar_y + bar_h - 1),
                              ROBO_COLOR_BAR_FILL_R, ROBO_COLOR_BAR_FILL_G, ROBO_COLOR_BAR_FILL_B);
             draw_circle_fill(fb, (int32_t)(bar_x + fw - rad), (int32_t)(bar_y + rad), (int32_t)rad,
+                             (int32_t)bar_y, (int32_t)(bar_y + bar_h - 1),
                              ROBO_COLOR_BAR_FILL_R, ROBO_COLOR_BAR_FILL_G, ROBO_COLOR_BAR_FILL_B);
         } else {
             draw_circle_fill(fb, (int32_t)(bar_x + fw / 2), (int32_t)(bar_y + rad),
                              (int32_t)frad,
+                             (int32_t)bar_y, (int32_t)(bar_y + bar_h - 1),
                              ROBO_COLOR_BAR_FILL_R, ROBO_COLOR_BAR_FILL_G, ROBO_COLOR_BAR_FILL_B);
         }
     }

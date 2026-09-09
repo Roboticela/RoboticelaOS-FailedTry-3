@@ -22,6 +22,19 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 QEMU_BIN="${QEMU:-qemu-system-x86_64}"
 command -v "$QEMU_BIN" >/dev/null 2>&1 || QEMU_BIN="/c/Program Files/qemu/qemu-system-x86_64.exe"
 
+# Windows QEMU builds need Windows-style paths (C:/...), not MSYS /d/... ones.
+UNAME_S="$(uname -s)"
+case "$UNAME_S" in
+    MINGW*|MSYS*|CYGWIN*)
+        winpath() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
+        ;;
+    *)
+        winpath() { echo "$1"; }
+        ;;
+esac
+DISK="$(winpath "$DISK")"
+SERIAL_LOG="$(winpath "$SERIAL_LOG")"
+
 find_ovmf() {
     # explicit wins
     if [ -n "${OVMF_CODE:-}" ] && [ -f "${OVMF_CODE:-}" ]; then
@@ -54,6 +67,7 @@ fi
 echo "Using firmware: $FW"
 
 # Vars image: prefer matching -vars file next to code; else a scratch copy.
+# (Scratch copy path is converted to Windows form for QEMU.)
 VARS="${OVMF_VARS:-}"
 if [ -z "$VARS" ]; then
     case "$FW" in
@@ -72,11 +86,11 @@ fi
 rm -f "$HERE/build/vars.fd"
 if [ -n "$VARS" ] && [ -f "$VARS" ]; then
     cp "$VARS" "$HERE/build/vars.fd"
-    VARS_ARGS=(-drive "if=pflash,format=raw,readonly=on,file=$FW" \
-               -drive "if=pflash,format=raw,file=$HERE/build/vars.fd")
+    VARS_ARGS=(-drive "if=pflash,format=raw,readonly=on,file=$(winpath "$FW")" \
+               -drive "if=pflash,format=raw,file=$(winpath "$HERE/build/vars.fd")")
 else
     echo "NOTE: no vars image found; booting without persistent UEFI vars." >&2
-    VARS_ARGS=(-bios "$FW")
+    VARS_ARGS=(-bios "$(winpath "$FW")")
 fi
 
 rm -f "$MONITOR_SOCK"
@@ -85,12 +99,25 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     DISPLAY_ARGS=(-display none)
 fi
 
+# Windows QEMU builds do not support unix-socket monitors (and Python there
+# has no AF_UNIX); use a loopback TCP monitor instead. MONITOR_TCP can be
+# overridden, e.g. MONITOR_TCP=127.0.0.1:4555.
+MONITOR_TCP="${MONITOR_TCP:-127.0.0.1:4444}"
+case "$UNAME_S" in
+    MINGW*|MSYS*|CYGWIN*)
+        MONITOR_ARGS=(-monitor "tcp:$MONITOR_TCP,server,nowait")
+        ;;
+    *)
+        MONITOR_ARGS=(-monitor "unix:$MONITOR_SOCK,server,nowait")
+        ;;
+esac
+
 exec "$QEMU_BIN" \
     -m 256M \
     "${VARS_ARGS[@]}" \
     -drive "file=$DISK,format=raw,if=ide" \
     -serial "file:$SERIAL_LOG" \
-    -monitor "unix:$MONITOR_SOCK,server,nowait" \
+    "${MONITOR_ARGS[@]}" \
     -no-reboot \
     "${DISPLAY_ARGS[@]}" \
     ${QEMU_EXTRA:-}

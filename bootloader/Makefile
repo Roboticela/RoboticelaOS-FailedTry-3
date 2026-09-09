@@ -17,6 +17,7 @@ CLANG ?= clang
 LD    ?= ld.lld
 NASM  ?= nasm
 PYTHON ?= python
+LOGO_WIDTH ?= 1024
 
 # Locate clang if not on PATH (common MSYS2/Windows setups).
 # NOTE: plain `command -v` is not enough on MSYS2 where C:/MinGW/bin/ld.exe
@@ -85,6 +86,9 @@ UEFI_SRCS := $(SRC)/main.c \
 UEFI_OBJS := $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(filter %.c,$(UEFI_SRCS))) \
              $(OBJ)/logo_embed.o
 
+# Boot image needs the generated logo BMP.
+IMAGE_FILES := $(BUILD)/BOOTX64.EFI testkernel $(LOGO_BMP) $(BUILD)/boot.cfg
+
 ifneq ($(MISSING_FLAVOR),)
 $(shell rm -rf $(OBJ))
 endif
@@ -112,7 +116,7 @@ $(OBJ)/%.o: $(SRC)/%.c | $(GEN)
 $(OBJ)/logo_embed.o: $(GEN)/logo_embed.S | $(GEN)
 	$(UEFI_CC) -c $< -o $@
 
-$(GEN)/logo_embed.S: assets/logo.bmp tools/embedlogo.py | $(GEN)
+$(GEN)/logo_embed.S: $(LOGO_BMP) tools/embedlogo.py | $(GEN)
 	$(PYTHON) tools/embedlogo.py
 
 $(GEN):
@@ -121,9 +125,19 @@ $(GEN):
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# Ensure assets exist (generates from reference.png on fresh checkouts).
-assets/logo.bmp: tools/genassets.py assets/reference.png
-	$(PYTHON) tools/genassets.py
+# Logo: generated from the SVG vector master (SVG -> 32-bit BMP).
+# The SVG lives in bootloader/assets/logo.svg (repo-root assets/logo.svg is
+# the canonical copy; assets/logo.svg is a synced duplicate).
+LOGO_SVG  := assets/logo.svg
+LOGO_BMP  := assets/logo.bmp
+LOGO_GEN  := tools/generate-logo.py
+
+.PHONY: logo
+logo: $(LOGO_BMP)
+
+# Regenerate when the SVG, the tool, or the configured raster width changes.
+$(LOGO_BMP): $(LOGO_SVG) $(LOGO_GEN)
+	$(PYTHON) $(LOGO_GEN) --svg $(LOGO_SVG) --out $(LOGO_BMP) --width $(LOGO_WIDTH)
 
 # ---------------------------------------------------------- test kernel
 
@@ -171,7 +185,7 @@ test: host-tests testkernel
 
 # ---------------------------------------------------------- image / run
 
-image: $(BUILD)/BOOTX64.EFI testkernel $(BUILD)/boot.cfg
+image: $(IMAGE_FILES)
 	$(PYTHON) tools/mkfat32.py --output $(BUILD)/robo-disk.img --size-mb 64 \
 	    --file EFI/BOOT/BOOTX64.EFI:$(BUILD)/BOOTX64.EFI \
 	    --file RoboBoot/robokernel:$(BUILD)/robokernel \

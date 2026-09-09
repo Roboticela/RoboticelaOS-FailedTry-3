@@ -42,15 +42,28 @@ case "$MODE" in
         wait || true
         ;;
     screenshot)
-        HEADLESS=1 bash "$ROOT/bootloader/tools/run-qemu.sh" "$DISK" &
+        # QEMU's output goes to a log so it cannot hold the caller's pipe
+        # open after we exit (Windows keeps it alive past `kill`).
+        HEADLESS=1 bash "$ROOT/bootloader/tools/run-qemu.sh" "$DISK" \
+            >"$ROOT/bootloader/build/qemu-stdout.log" 2>&1 &
         QEMU_PID=$!
         # Give OVMF + boot + test-mode hold time to settle, then capture.
         sleep 25
+        # Match the runner's monitor (TCP on Windows, unix socket elsewhere).
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*) SOCK="${MONITOR_TCP:-127.0.0.1:4444}" ;;
+            *)                    SOCK="$ROOT/bootloader/build/monitor.sock" ;;
+        esac
         bash "$ROOT/bootloader/tools/screendump.sh" \
-            "$ROOT/bootloader/build/screen.png" \
-            "$ROOT/bootloader/build/monitor.sock"
+            "$ROOT/bootloader/build/screen.png" "$SOCK"
+        # Stop QEMU. Windows ignores POSIX signals from Git Bash reliably,
+        # so fall back to taskkill there.
         kill "$QEMU_PID" 2>/dev/null || true
-        wait "$QEMU_PID" 2>/dev/null || true
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*)
+                taskkill //F //IM qemu-system-x86_64.exe >/dev/null 2>&1 || true
+                ;;
+        esac
         echo
         echo "Boot screen saved to bootloader/build/screen.png"
         ;;

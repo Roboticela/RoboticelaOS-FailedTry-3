@@ -43,6 +43,7 @@
 | `src/lib.h/.c`, `src/crt.c` | Freestanding runtime: mem/str helpers, formatter, `_fltused` |
 | `src/font/robofont.c` | Tiny 6x9 bitmap font (error screens only) |
 | `build/generated/logo_embed.S` | Build-time embedded copy of `assets/logo.bmp` (fallback logo) |
+| `tools/generate-logo.py` | SVG → 32-bit BMP logo generation (`make logo`; runs automatically when the BMP is missing/outdated) |
 
 ## Boot flow in detail
 
@@ -53,9 +54,11 @@
 3. **Configuration**: `RoboBoot/boot.cfg` parsed with strict validation.
    Missing file is fine (defaults); invalid file is fatal (error screen).
 4. **Logo**: BMP decoded from disk into BGRA with alpha. Any decode failure
-   falls back to the build-time embedded logo. The image is centered
-   horizontally, positioned per the reference proportions, and clipped to the
-   framebuffer.
+   falls back to the build-time embedded logo. The image is sized relative to
+   the screen (height = 18% of screen height, width capped at 30% of screen
+   width), centred horizontally at ~42% of screen height, and clipped to the
+   framebuffer. A screen-relative layout guarantees the progress bar below
+   (centred at ~57.5% height) can never overlap the logo.
 5. **Kernel**: whole file read, ELF64 validated (magic, class, endianness,
    machine, type, program-header bounds, segment ranges/overflow, entry).
    Each `PT_LOAD` segment gets fresh pages allocated at its physical address,
