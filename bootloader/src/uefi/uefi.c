@@ -1,4 +1,4 @@
-/* robobootloader - UEFI service helpers: files, ACPI RSDP, etc. */
+/* robobootloader - UEFI service helpers: files, keyboard, ACPI RSDP, etc. */
 #include "uefi.h"
 #include "config/config.h"
 #include "debug.h"
@@ -15,7 +15,7 @@ EFI_FILE_PROTOCOL *file_open_volume(void)
 {
     EFI_STATUS s;
     EFI_HANDLE *handles = NULL;
-    UINTN count = 0, buf_size = 0, i;
+    UINTN count = 0, i;
     EFI_GUID sfsg = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
     EFI_FILE_PROTOCOL *volume = NULL;
 
@@ -140,6 +140,20 @@ bool file_read_all(EFI_FILE_PROTOCOL *f, uint8_t **out_data, uint64_t *out_size)
  * the callback itself must not. */
 #define READ_CHUNK_SIZE  (256u * 1024u)
 
+/* Convenience: open by path on a volume, read the whole file, close. */
+bool file_read_whole(EFI_FILE_PROTOCOL *volume, const char *path,
+                     uint8_t **out_data, uint64_t *out_size)
+{
+    EFI_FILE_PROTOCOL *f = file_open(volume, path);
+    bool ok;
+
+    if (!f)
+        return false;
+    ok = file_read_all(f, out_data, out_size);
+    file_close(f);
+    return ok;
+}
+
 bool file_read_all_progress(EFI_FILE_PROTOCOL *f, uint8_t **out_data,
                             uint64_t *out_size, file_progress_fn progress,
                             void *ctx)
@@ -200,20 +214,222 @@ bool file_read_all_progress(EFI_FILE_PROTOCOL *f, uint8_t **out_data,
     return true;
 }
 
-bool file_read_whole(EFI_FILE_PROTOCOL *volume, const char *path,
-                     uint8_t **out_data, uint64_t *out_size)
+/* ------------------------------------------------------- volume enumeration */
+
+#define ROBO_MAX_VOLUMES 8
+static EFI_HANDLE g_vol_handles[ROBO_MAX_VOLUMES];
+
+uint64_t file_open_all_volumes(EFI_FILE_PROTOCOL **handles, uint64_t max)
 {
-    EFI_FILE_PROTOCOL *f = file_open(volume, path);
-    bool ok;
-    if (!f) {
-        debugf("file not found: %s", path);
-        return false;
+    EFI_STATUS s;
+    EFI_GUID sfsg = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    UINTN count = 0;
+    EFI_HANDLE *raw = NULL;
+    uint64_t n = 0, i;
+
+    if (!handles || max == 0)
+        return 0;
+
+    s = bs()->LocateHandleBuffer(EFI_BY_PROTOCOL, &sfsg, NULL, &count, &raw);
+    if (EFI_ERROR(s) || !raw || count == 0) {
+        if (raw)
+            bs()->FreePool(raw);
+        return 0;
     }
-    ok = file_read_all(f, out_data, out_size);
-    file_close(f);
-    if (ok)
-        debugf("file loaded: %s (%llu bytes)", path, *out_size);
-    return ok;
+
+    for (i = 0; i < count && n < max && n < ROBO_MAX_VOLUMES; i++) {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *sfs = NULL;
+        EFI_FILE_PROTOCOL *root = NULL;
+        s = bs()->HandleProtocol(raw[i], &sfsg, (void **)&sfs);
+        if (EFI_ERROR(s) || !sfs)
+            continue;
+        s = sfs->OpenVolume(sfs, (void **)&root);
+        if (EFI_ERROR(s) || !root)
+            continue;
+        g_vol_handles[n] = raw[i];
+        handles[n] = root;
+        n++;
+    }
+    bs()->FreePool(raw);
+    return n;
+}
+
+EFI_HANDLE volume_device_handle(uint64_t index)
+{
+    if (index >= ROBO_MAX_VOLUMES)
+        return NULL;
+    return g_vol_handles[index];
+}
+
+void file_volume_label(EFI_FILE_PROTOCOL *root, char *out, uint64_t cap)
+{
+    EFI_STATUS s;
+    EFI_GUID fsinfo_guid = EFI_FILE_SYSTEM_INFO_ID;
+    UINTN buf_size = 512;
+    uint8_t *buf;
+    EFI_FILE_SYSTEM_INFO *info;
+    uint64_t i, n;
+
+    if (cap)
+        out[0] = '\0';
+    if (!root || cap < 2)
+        return;
+
+    buf = mem_alloc(buf_size);
+    if (!buf)
+        return;
+    s = root->GetInfo(root, &fsinfo_guid, &buf_size, buf);
+    if (EFI_ERROR(s)) {
+        mem_free(buf);
+        return;
+    }
+    info = (EFI_FILE_SYSTEM_INFO *)buf;
+    n = 0;
+    for (i = 0; info->VolumeLabel[i] && n < cap - 1; i++) {
+        CHAR16 c = info->VolumeLabel[i];
+        if (c >= 0x20 && c < 0x7F)
+            out[n++] = (char)c;         /* ASCII only; others dropped */
+    }
+    out[n] = '\0';
+    mem_free(buf);
+}
+
+uint64_t file_size(EFI_FILE_PROTOCOL *f)
+{
+    EFI_STATUS s;
+    EFI_GUID fi_guid = EFI_FILE_INFO_ID;
+    UINTN fi_size = 0;
+    uint8_t fi_small[sizeof(EFI_FILE_INFO) + 2];
+    UINTN pos = 0;
+    uint64_t sz;
+
+    if (!f)
+        return 0;
+    fi_size = sizeof(fi_small);
+    s = f->GetInfo(f, &fi_guid, &fi_size, fi_small);
+    if (EFI_ERROR(s))
+        return 0;
+    sz = *(uint64_t *)(fi_small + 8);   /* EFI_FILE_INFO.FileSize */
+    f->SetPosition(f, pos);             /* rewind for subsequent reads */
+    if (sz > ROBO_MAX_FILE_SIZE)
+        return 0;
+    return sz;
+}
+
+/* ------------------------------------------------------------- console in */
+
+EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *console_input_ex(void)
+{
+    EFI_STATUS s;
+    EFI_GUID ex_guid = EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID;
+    EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *ex = NULL;
+    EFI_HANDLE cin_handle = st()->ConsoleInHandle;
+
+    if (!cin_handle)
+        return NULL;
+    s = bs()->HandleProtocol(cin_handle, &ex_guid, (void **)&ex);
+    if (!EFI_ERROR(s) && ex)
+        return ex;
+    /* Some firmware only exposes EX on child handles; probe all handles. */
+    {
+        UINTN count = 0;
+        EFI_HANDLE *raw = NULL;
+
+        s = bs()->LocateHandleBuffer(EFI_BY_PROTOCOL, &ex_guid, NULL,
+                                     &count, &raw);
+        if (!EFI_ERROR(s) && raw && count > 0) {
+            s = bs()->HandleProtocol(raw[0], &ex_guid, (void **)&ex);
+            if (EFI_ERROR(s))
+                ex = NULL;
+        }
+        if (raw)
+            bs()->FreePool(raw);
+    }
+    return ex;
+}
+
+/* ----------------------------------------------------- firmware chainload */
+
+/* Build "<volume device path>\EFI\BOOT\BOOTX64.EFI" as a full device path:
+ * [volume path nodes] + MEDIA/FILEPATH node + END node. LoadImage then
+ * behaves exactly like the firmware launching that file itself. */
+EFI_STATUS file_load_image(EFI_HANDLE volume_handle, const CHAR16 *path,
+                           EFI_HANDLE *out_image)
+{
+    EFI_STATUS s;
+    EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
+    EFI_DEVICE_PATH_PROTOCOL *vol_dp = NULL;
+    EFI_DEVICE_PATH_PROTOCOL *full = NULL, *node, *end;
+    UINTN vol_len = 0, path_len = 0, full_len, i;
+    UINT8 *w;
+
+    if (!volume_handle || !path || !out_image)
+        return EFI_INVALID_PARAMETER;
+
+    s = bs()->HandleProtocol(volume_handle, &dp_guid, (void **)&vol_dp);
+    if (EFI_ERROR(s) || !vol_dp)
+        return EFI_UNSUPPORTED;
+
+    /* Walk the volume's device path to find its total length (incl. END). */
+    node = vol_dp;
+    while (node->Type != EFI_DP_TYPE_END) {
+        UINT16 l = (UINT16)(node->Length[0] | (node->Length[1] << 8));
+        if (l < 4)
+            return EFI_INVALID_PARAMETER;
+        vol_len += l;
+        node = (EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)node + l);
+    }
+    vol_len += (UINTN)(node->Length[0] | (node->Length[1] << 8)); /* END node */
+
+    while (path[path_len])
+        path_len++;
+
+    full_len = vol_len + 4 + (path_len + 1) * 2;
+    full = mem_alloc((uint64_t)full_len);
+    if (!full)
+        return EFI_OUT_OF_RESOURCES;
+
+    robomemcpy(full, vol_dp, vol_len);
+    {
+        /* Overwrite the volume path's trailing END node (4 bytes) with our
+         * MEDIA/FILEPATH node, then append a fresh END. */
+        UINTN body = vol_len - 4;
+        w = (UINT8 *)full + body;
+
+        w[0] = EFI_DP_TYPE_MEDIA;
+        w[1] = EFI_DP_SUBTYPE_MEDIA_FILE;
+        w[2] = (UINT8)((4 + (path_len + 1) * 2) & 0xFF);
+        w[3] = (UINT8)((4 + (path_len + 1) * 2) >> 8);
+        w += 4;
+        for (i = 0; i < path_len; i++) {
+            w[i * 2] = (UINT8)(path[i] & 0xFF);
+            w[i * 2 + 1] = (UINT8)(path[i] >> 8);
+        }
+        w[path_len * 2] = 0;
+        w[path_len * 2 + 1] = 0;
+        w += (path_len + 1) * 2;
+
+        end = (EFI_DEVICE_PATH_PROTOCOL *)w;
+        end->Type = EFI_DP_TYPE_END;
+        end->SubType = EFI_DP_SUBTYPE_END_ALL;
+        end->Length[0] = 4;
+        end->Length[1] = 0;
+    }
+
+    s = bs()->LoadImage(TRUE, image_handle(), full, 0, 0, out_image);
+    mem_free(full);
+    if (!EFI_ERROR(s))
+        debugf("LoadImage OK (image handle %p)", (void *)*out_image);
+    else
+        debugf("LoadImage failed: 0x%llx", (uint64_t)s);
+    return s;
+}
+
+EFI_STATUS file_start_image(EFI_HANDLE image)
+{
+    UINTN exit_data_size = 0;
+    CHAR16 *exit_data = NULL;
+    return bs()->StartImage(image, &exit_data_size, &exit_data);
 }
 
 /* ------------------------------------------------------------- ACPI RSDP */

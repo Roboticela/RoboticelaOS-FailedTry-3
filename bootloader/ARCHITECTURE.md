@@ -34,6 +34,8 @@
 | `src/uefi/uefi.h/.c` | Minimal hand-written UEFI spec definitions (system table, boot services, GOP, file protocols) + file access helpers |
 | `src/graphics/framebuffer.h/.c` | GOP location, mode info, format normalization, clipped pixel/blit primitives |
 | `src/graphics/renderer.h/.c` | Boot screen layout: logo placement, progress bar, fatal-error screen |
+| `src/keyboard/keyboard.h/.c` | Firmware keyboard driver: ConIn + Simple Text Input EX (modifier state = Alt detection) |
+| `src/menu/menu.h/.c` | Apple-style "Choose Startup Disk" picker: volume discovery, rendering, countdown, chainload decision |
 | `src/image/bmp.h/.c` | Hardened 32-bit BMP decoder (bounds-checked, orientation/padding aware) |
 | `src/config/config.h/.c` | `boot.cfg` parser with fail-safe validation |
 | `src/elf/elf_loader.h/.c` | ELF64 x86-64 loader: header/PHDR validation, segment loading, BSS zeroing |
@@ -53,23 +55,28 @@
    `PixelBltOnly` is rejected and boot falls back to a serial-only path.
 3. **Configuration**: `RoboBoot/boot.cfg` parsed with strict validation.
    Missing file is fine (defaults); invalid file is fatal (error screen).
-4. **Logo**: BMP decoded from disk into BGRA with alpha. Any decode failure
+4. **Boot picker** (unless `menu=none`): a 400 ms boot-key window watches for
+   Alt (EX shift state), Down, or F2 while the splash pumps; `menu=always`
+   skips the watch. When triggered, every ESP with a `\EFI\BOOT\BOOTX64.EFI`
+   is listed; Enter chainloads the chosen disk via LoadImage/StartImage (no
+   return on success), Esc continues the normal path on this disk.
+5. **Logo**: BMP decoded from disk into BGRA with alpha. Any decode failure
    falls back to the build-time embedded logo. The image is sized relative to
    the screen (height = 18% of screen height, width capped at 30% of screen
    width), centred horizontally at ~42% of screen height, and clipped to the
    framebuffer. A screen-relative layout guarantees the progress bar below
    (centred at ~57.5% height) can never overlap the logo.
-5. **Kernel**: whole file read, ELF64 validated (magic, class, endianness,
+6. **Kernel**: whole file read, ELF64 validated (magic, class, endianness,
    machine, type, program-header bounds, segment ranges/overflow, entry).
    Each `PT_LOAD` segment gets fresh pages allocated at its physical address,
    file bytes copied, `p_memsz > p_filesz` (BSS) zero-filled.
-6. **BootInfo**: versioned structure filled with framebuffer info, ACPI RSDP
+7. **BootInfo**: versioned structure filled with framebuffer info, ACPI RSDP
    (from the EFI configuration table), kernel base/size/entry, optional
    initfs, boot device.
-7. **Memory map**: final `GetMemoryMap` (with padded buffer and retry loop on
+8. **Memory map**: final `GetMemoryMap` (with padded buffer and retry loop on
    `EFI_BUFFER_TOO_SMALL`), then `ExitBootServices(map_key)` with retry if
    the map changed in between.
-8. **Handoff**: interrupts cleared, stack abandoned, `RDI = &RoboBootInfo`,
+9. **Handoff**: interrupts cleared, stack abandoned, `RDI = &RoboBootInfo`,
    jump to `kernel_entry`. No boot services are used after this point.
 
 ## RoboBootInfo — the bootloader→kernel contract

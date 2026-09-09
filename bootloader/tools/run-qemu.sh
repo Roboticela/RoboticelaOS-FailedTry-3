@@ -19,9 +19,6 @@ SERIAL_LOG="${SERIAL_LOG:-$HERE/build/serial.log}"
 MONITOR_SOCK="${MONITOR_SOCK:-$HERE/build/monitor.sock}"
 mkdir -p "$(dirname "$SERIAL_LOG")"
 
-QEMU_BIN="${QEMU:-qemu-system-x86_64}"
-command -v "$QEMU_BIN" >/dev/null 2>&1 || QEMU_BIN="/c/Program Files/qemu/qemu-system-x86_64.exe"
-
 # Windows QEMU builds need Windows-style paths (C:/...), not MSYS /d/... ones.
 UNAME_S="$(uname -s)"
 case "$UNAME_S" in
@@ -32,6 +29,17 @@ case "$UNAME_S" in
         winpath() { echo "$1"; }
         ;;
 esac
+
+# Optional second disk (boot-picker testing): SECOND_DISK=<path> attaches it
+# as a second IDE drive so the firmware exposes two ESPs to enumerate.
+SECOND_DISK_ARG=()
+if [ -n "${SECOND_DISK:-}" ] && [ -f "$SECOND_DISK" ]; then
+    SECOND_DISK_ARG=(-drive "file=$(winpath "$SECOND_DISK"),format=raw,if=ide,index=1")
+fi
+
+QEMU_BIN="${QEMU:-qemu-system-x86_64}"
+command -v "$QEMU_BIN" >/dev/null 2>&1 || QEMU_BIN="/c/Program Files/qemu/qemu-system-x86_64.exe"
+
 DISK="$(winpath "$DISK")"
 SERIAL_LOG="$(winpath "$SERIAL_LOG")"
 
@@ -116,6 +124,7 @@ exec "$QEMU_BIN" \
     -m 256M \
     "${VARS_ARGS[@]}" \
     -drive "file=$DISK,format=raw,if=ide" \
+    "${SECOND_DISK_ARG[@]}" \
     -serial "file:$SERIAL_LOG" \
     "${MONITOR_ARGS[@]}" \
     -no-reboot \

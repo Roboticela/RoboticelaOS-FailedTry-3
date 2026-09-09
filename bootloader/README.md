@@ -92,13 +92,15 @@ The result is `bootloader/build/BOOTX64.EFI`, a standard UEFI application.
 ## Test
 
 ```bash
-make test       # host unit tests for config parser, BMP decoder, ELF loader
+make test       # host unit tests for config parser, BMP decoder, ELF loader,
+                # progress engine
 ```
 
-43 automated host tests cover: valid/invalid/missing/oversized inputs for
-`boot.cfg` parsing, BMP decoding (truncation, bad magic, absurd dimensions,
-padding, orientation), and the ELF64 loader (bad magic, 32-bit, wrong arch,
-no PT_LOAD, overflowing segments, bogus entry point).
+51 automated host tests cover: valid/invalid/missing/oversized inputs for
+`boot.cfg` parsing (including `menu=`), BMP decoding (truncation, bad magic,
+absurd dimensions, padding, orientation), the ELF64 loader (bad magic,
+32-bit, wrong arch, no PT_LOAD, overflowing segments, bogus entry point), and
+the animated progress engine (ease-out glides, span bounds, monotonicity).
 
 ## QEMU preview
 
@@ -212,7 +214,8 @@ ESP (FAT32, GPT)
 kernel  = RoboBoot/robokernel
 logo    = RoboBoot/logo.bmp
 initfs  =                  # empty disables the optional initfs
-timeout = 3
+timeout = 3                # boot-picker countdown (seconds)
+menu    = alt              # alt | always | none - Apple-style device picker
 test    = 1                # hold the boot screen for inspection
 debug   = 1                # developer serial output (COM1, 115200 8N1)
 ```
@@ -220,6 +223,30 @@ debug   = 1                # developer serial output (COM1, 115200 8N1)
 Unknown keys, malformed values, or `..`/backslash/absolute paths in path
 values are rejected — the bootloader shows its error screen rather than
 guessing. Missing file = defaults.
+
+## Boot device picker (hold Alt at power-on)
+
+Like the Mac: hold **Alt/Option** while powering on and the picker opens.
+Arrow keys move, **Enter** boots the highlighted disk, **Esc** continues the
+normal boot path. A countdown (config `timeout`) auto-boots the selected disk
+and restarts on every selection change. Holding **Down-arrow** for a moment
+or tapping **F2** also opens it. `menu = always` shows it on every boot,
+`menu = none` disables it.
+
+The picker lists every volume that has a bootable `\EFI\BOOT\BOOTX64.EFI`,
+shows its FAT volume label (set it with `mkfat32.py --label`), and marks the
+current disk with a green dot. Selecting a *different* disk chainloads its
+loader through the firmware (LoadImage/StartImage); selecting the current
+disk and pressing Esc just boots normally.
+
+Two-disk test setup (from the repo root):
+
+```bash
+./build-bootloader.sh image image-menu   # builds robo-disk.img + robo-disk2.img
+SECOND_DISK=bootloader/build/robo-disk2.img ./run-bootloader.sh
+# (the wrapper script passes it through to QEMU as a second IDE drive)
+# or run from bootloader/:  SECOND_DISK=build/robo-disk2.img bash tools/run-qemu.sh
+```
 
 ## Debug mode
 

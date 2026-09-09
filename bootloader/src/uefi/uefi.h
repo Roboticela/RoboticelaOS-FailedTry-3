@@ -442,6 +442,80 @@ typedef struct {
 #define EFI_FILE_MODE_READ      0x0000000000000001ULL
 #define EFI_FILE_MODE_WRITE     0x0000000000000002ULL
 
+/* --------------------------- EFI_SIMPLE_TEXT_INPUT_PROTOCOL (EFI 1.10) --- */
+
+/* EFI_INPUT_KEY: ScanCode 0 for printable keys; UnicodeChar 0 otherwise. */
+typedef struct {
+    UINT16  ScanCode;
+    CHAR16  UnicodeChar;
+} EFI_INPUT_KEY;
+
+typedef EFI_STATUS (*EFI_INPUT_RESET)(VOID *This, BOOLEAN ExtendedVerification);
+typedef EFI_STATUS (*EFI_INPUT_READ_KEY_STROKE)(VOID *This, EFI_INPUT_KEY *Key);
+
+typedef struct {
+    EFI_INPUT_RESET              Reset;
+    EFI_INPUT_READ_KEY_STROKE    ReadKeyStroke;
+    EFI_EVENT                    WaitForKey;
+} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+
+/* UEFI scan codes (subset used by the boot picker). */
+#define SCAN_NULL     0x0000
+#define SCAN_UP       0x0001
+#define SCAN_DOWN     0x0002
+#define SCAN_RIGHT    0x0004
+#define SCAN_LEFT     0x0005
+#define SCAN_HOME     0x0006
+#define SCAN_END      0x0007
+#define SCAN_DELETE   0x0008
+#define SCAN_ESC      0x0017
+
+/* EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL (UEFI 2.x): exposes modifier state so
+ * a held Alt at power-on can be detected (plain ConIn cannot). */
+#define EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID \
+    EFI_GUID_INIT(0xdd9e7534, 0x7762, 0x4698, 0x8c, 0x14, 0xf5, 0x85, 0x17, 0xa6, 0x25, 0xaa)
+
+#define EFI_SHIFT_STATE_VALID        0x80000000u
+#define EFI_RIGHT_SHIFT_PRESSED      0x00000001u
+#define EFI_LEFT_SHIFT_PRESSED       0x00000002u
+#define EFI_RIGHT_CONTROL_PRESSED    0x00000004u
+#define EFI_LEFT_CONTROL_PRESSED     0x00000008u
+#define EFI_RIGHT_ALT_PRESSED        0x00000010u
+#define EFI_LEFT_ALT_PRESSED         0x00000020u
+#define EFI_RIGHT_LOGO_PRESSED       0x00000040u
+#define EFI_LEFT_LOGO_PRESSED        0x00000080u
+
+typedef UINT8 EFI_KEY_TOGGLE_STATE;
+
+typedef struct {
+    UINT32                  KeyShiftState;
+    EFI_KEY_TOGGLE_STATE    KeyToggleState;
+} EFI_KEY_STATE;
+
+typedef struct {
+    EFI_INPUT_KEY   Key;
+    EFI_KEY_STATE   KeyState;
+} EFI_KEY_DATA;
+
+typedef EFI_STATUS (*EFI_INPUT_RESET_EX)(VOID *This, BOOLEAN ExtendedVerification);
+typedef EFI_STATUS (*EFI_INPUT_READ_KEY_EX)(VOID *This, EFI_KEY_DATA *KeyData);
+typedef EFI_STATUS (*EFI_SET_STATE_EX)(VOID *This, EFI_KEY_TOGGLE_STATE *KeyToggleState);
+typedef EFI_STATUS (*EFI_REGISTER_KEYSTROKE_NOTIFY)(VOID *This, EFI_KEY_DATA *KeyData,
+                                                    VOID *NotifyFunction, VOID **NotifyHandle);
+typedef EFI_STATUS (*EFI_UNREGISTER_KEYSTROKE_NOTIFY)(VOID *This, VOID *NotifyHandle);
+
+typedef struct {
+    EFI_INPUT_RESET_EX                  Reset;
+    EFI_INPUT_READ_KEY_EX               ReadKeyStrokeEx;
+    EFI_EVENT                           WaitForKeyEx;
+    EFI_SET_STATE_EX                    SetState;
+    EFI_REGISTER_KEYSTROKE_NOTIFY       RegisterKeyNotify;
+    EFI_UNREGISTER_KEYSTROKE_NOTIFY     UnregisterKeyNotify;
+} EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL;
+
+/* EFI_KEY_NOTIFY_FUNCTION is registered by firmware consumers only; we never
+ * register notifications, so the function pointer stays opaque. */
+
 #define EFI_FILE_READ_ONLY      0x0000000000000001ULL
 #define EFI_FILE_HIDDEN         0x0000000000000002ULL
 #define EFI_FILE_SYSTEM         0x0000000000000004ULL
@@ -481,6 +555,22 @@ typedef struct {
     UINT64                  Revision;
     EFI_VOLUME_OPEN_VOLUME  OpenVolume;
 } EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
+
+/* EFI_FILE_SYSTEM_INFO (for the FAT volume label shown in the boot menu).
+ * Spec layout (UEFI 2.10): Size, ReadOnly, VolumeSize, FreeSpace, BlockSize,
+ * VolumeLabel - there is NO MaxSpace field; adding one shifts VolumeLabel
+ * 8 bytes and truncates the label. */
+typedef struct {
+    UINT64  Size;
+    BOOLEAN ReadOnly;
+    UINTN   VolumeSize;
+    UINTN   FreeSpace;
+    UINT32  BlockSize;
+    CHAR16  VolumeLabel[1];
+} EFI_FILE_SYSTEM_INFO;
+
+#define EFI_FILE_SYSTEM_INFO_ID \
+    EFI_GUID_INIT(0x09576e93, 0x6d3f, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b)
 
 typedef struct {
     UINT32          Revision;
@@ -612,10 +702,29 @@ typedef struct {
 #define EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID \
     EFI_GUID_INIT(0x387477c1, 0x69c7, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b)
 
+#define EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID_EX \
+    EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID
+
 #define EFI_BLOCK_IO_PROTOCOL_GUID \
     EFI_GUID_INIT(0x964e5b21, 0x6459, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b)
 
 #define EFI_LOADED_IMAGE_PROTOCOL_REVISION  0x1000
+
+/* EFI_DEVICE_PATH_PROTOCOL (EFI 1.10): minimal node header. We only need to
+ * walk/append nodes for LoadImage device paths. */
+typedef struct {
+    UINT8   Type;
+    UINT8   SubType;
+    UINT8   Length[2];          /* little-endian, includes this header */
+} EFI_DEVICE_PATH_PROTOCOL;
+
+#define EFI_DEVICE_PATH_PROTOCOL_GUID \
+    EFI_GUID_INIT(0x09576e91, 0x6d3f, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b)
+
+#define EFI_DP_TYPE_END              0x7F
+#define EFI_DP_SUBTYPE_END_ALL       0xFF
+#define EFI_DP_TYPE_MEDIA            0x04
+#define EFI_DP_SUBTYPE_MEDIA_FILE    0x04
 
 /* locate search types */
 #define EFI_ALL_HANDLES             0u
@@ -651,5 +760,34 @@ void file_close(EFI_FILE_PROTOCOL *f);
 
 /* Find the ACPI RSDP (ACPI 2.0 preferred, 1.0 fallback). 0 if absent. */
 uint64_t find_acpi_rsdp(void);
+
+/* Enumerate every volume exposing EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (i.e. every
+ * ESP the firmware knows). Fills handles[] (up to max) with the opened root
+ * EFI_FILE_PROTOCOL of each volume; returns the count (0 on none/error).
+ * Caller closes each with file_close(). */
+uint64_t file_open_all_volumes(EFI_FILE_PROTOCOL **handles, uint64_t max);
+
+/* Size of a file in bytes (0 on failure or if too large). Does not move the
+ * read position permanently (rewinds to 0). */
+uint64_t file_size(EFI_FILE_PROTOCOL *f);
+
+/* ASCII-ified FAT volume label of an opened volume root (empty on failure).
+ * Non-ASCII characters are dropped. */
+void file_volume_label(EFI_FILE_PROTOCOL *root, char *out, uint64_t cap);
+
+/* Locate the Simple Text Input EX protocol on the active ConsoleIn handle.
+ * NULL if the firmware does not provide it. */
+EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *console_input_ex(void);
+
+/* Firmware image loading: LoadImage from a device path + StartImage.
+ * Used by the boot picker to chainload \EFI\BOOT\BOOTX64.EFI on another
+ * volume. On success this never returns (the new image runs). */
+EFI_STATUS file_load_image(EFI_HANDLE volume_handle, const CHAR16 *path,
+                           EFI_HANDLE *out_image);
+EFI_STATUS file_start_image(EFI_HANDLE image_handle);
+
+/* The device handle that a SimpleFileSystem volume handle belongs to (for
+ * LoadImage device paths). Pass the handle returned by LocateHandleBuffer. */
+EFI_HANDLE volume_device_handle(uint64_t index); /* implemented via statics */
 
 #endif /* ROBO_UEFI_H */

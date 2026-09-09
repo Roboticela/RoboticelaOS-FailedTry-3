@@ -5,7 +5,7 @@
 #include "lib.h"
 #include "debug.h"
 
-/* ------------------------------------------------------------- primitives */
+/* ------------------------------------------------------------ primitives */
 
 /* integer sqrt (no libm in freestanding) */
 static uint32_t sqrt_isq(uint32_t v)
@@ -223,6 +223,156 @@ void render_boot_frame(fb_t *fb, const robo_image_t *logo)
     if (logo)
         draw_logo(fb, logo);
     render_progress(fb, 0);
+}
+
+/* ------------------------------------------- scaled logo / text / shapes */
+
+/* Reusable scaled-logo renderer for the boot menu (fraction-based sizing). */
+void render_logo_scaled(fb_t *fb, const robo_image_t *img,
+                        double cy_frac, double max_h_frac)
+{
+    uint32_t dw, dh, dx, dy;
+    if (!img || !img->pixels || img->width == 0 || img->height == 0)
+        return;
+
+    /* Fit into max_h_frac of the screen height, cap width at 60% of screen,
+     * never upscale beyond 1x (crispness). */
+    {
+        uint64_t tgt_h = (uint64_t)((double)fb->height * max_h_frac);
+        uint64_t max_w = (uint64_t)((double)fb->width * 0.60);
+        if (img->height > tgt_h) {
+            dw = (uint32_t)((uint64_t)img->width * tgt_h / img->height);
+            dh = (uint32_t)tgt_h;
+        } else {
+            dw = img->width;
+            dh = img->height;
+        }
+        if (dw > max_w) {
+            dh = (uint32_t)((uint64_t)dh * max_w / dw);
+            dw = (uint32_t)max_w;
+        }
+    }
+    if (dw == 0) dw = 1;
+    if (dh == 0) dh = 1;
+
+    dx = (fb->width >= dw) ? (fb->width - dw) / 2 : 0;
+    dy = (uint32_t)((double)fb->height * cy_frac) - dh / 2;
+
+    if (dw == img->width && dh == img->height) {
+        fb_blit_px(fb, dx, dy, img->pixels, true, img->width, img->height, img->pitch);
+        return;
+    }
+
+    /* Box-filter resample (same as draw_logo; factored inline here). */
+    {
+        uint8_t *dst = mem_alloc((uint64_t)dw * dh * 4);
+        if (!dst)
+            return;
+        for (uint32_t y = 0; y < dh; y++) {
+            uint32_t sy0 = (uint32_t)(((uint64_t)y * img->height) / dh);
+            uint32_t sy1 = (uint32_t)((((uint64_t)y + 1) * img->height) / dh);
+            if (sy1 <= sy0)
+                sy1 = sy0 + 1;
+            uint8_t *drow = dst + (uint64_t)y * dw * 4;
+            for (uint32_t x = 0; x < dw; x++) {
+                uint32_t sx0 = (uint32_t)(((uint64_t)x * img->width) / dw);
+                uint32_t sx1 = (uint32_t)((((uint64_t)x + 1) * img->width) / dw);
+                if (sx1 <= sx0)
+                    sx1 = sx0 + 1;
+                uint32_t sr = 0, sg = 0, sb = 0, sa = 0, n = 0;
+                for (uint32_t sy = sy0; sy < sy1; sy++) {
+                    const uint8_t *srow = img->pixels + (uint64_t)sy * img->pitch;
+                    for (uint32_t sx = sx0; sx < sx1; sx++) {
+                        const uint8_t *s = srow + (uint64_t)sx * 4;
+                        sr += s[0]; sg += s[1]; sb += s[2]; sa += s[3];
+                        n++;
+                    }
+                }
+                uint8_t *d = drow + (uint64_t)x * 4;
+                d[0] = (uint8_t)(sr / n);
+                d[1] = (uint8_t)(sg / n);
+                d[2] = (uint8_t)(sb / n);
+                d[3] = (uint8_t)(sa / n);
+            }
+        }
+        fb_blit_px(fb, dx, dy, dst, true, dw, dh, dw * 4);
+        mem_free(dst);
+    }
+}
+
+uint32_t render_text_width(const char *text, uint32_t scale)
+{
+    uint32_t w = 0;
+    while (*text) {
+        unsigned idx = (unsigned)(*text - ROBOFONT_FIRST);
+        if (*text >= ROBOFONT_FIRST && idx < ROBOFONT_COUNT)
+            w += robofont_advance[idx];
+        text++;
+    }
+    return w * scale;
+}
+
+void render_text_scaled(fb_t *fb, uint32_t x, uint32_t y, const char *text,
+                        uint32_t scale, uint8_t r, uint8_t g, uint8_t b)
+{
+    uint32_t cx = x;
+    while (*text) {
+        unsigned idx;
+        uint8_t adv;
+        if (*text < ROBOFONT_FIRST ||
+            (unsigned)(*text - ROBOFONT_FIRST) >= ROBOFONT_COUNT) {
+            text++;
+            continue;
+        }
+        idx = (unsigned)(*text - ROBOFONT_FIRST);
+        {
+            const uint8_t *bits = &robofont_bits[robofont_offset[idx]];
+            uint32_t gw = robofont_width[idx];
+            uint32_t yoff = robofont_yoff[idx];
+            if (gw && scale) {
+                for (uint32_t row = 0; row < ROBOFONT_HEIGHT; row++) {
+                    uint8_t line = bits[row];
+                    for (uint32_t col = 0; col < gw; col++) {
+                        if (line & (0x80u >> col))
+                            fb_fill_rect(fb, cx + col * scale, y + (yoff + row) * scale,
+                                         scale, scale, r, g, b);
+                    }
+                }
+            }
+        }
+        adv = robofont_advance[idx];
+        cx += adv * scale;
+        text++;
+    }
+}
+
+void render_round_rect(fb_t *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                       uint8_t r, uint8_t g, uint8_t b)
+{
+    if (w == 0 || h == 0)
+        return;
+    if (h == 1) {
+        fb_fill_rect(fb, x, y, w, 1, r, g, b);
+        return;
+    }
+    {
+        uint32_t rad = h / 2;
+        fb_fill_rect(fb, x + rad, y, w - 2 * rad, h, r, g, b);
+        for (uint32_t row = 0; row < h; row++) {
+            int32_t dy2 = (int32_t)row - (int32_t)rad;
+            if (dy2 < 0)
+                dy2 = -dy2;
+            if (dy2 > (int32_t)rad)
+                dy2 = (int32_t)rad;
+            {
+                int32_t half = (int32_t)sqrt_isq((uint32_t)(rad * rad - dy2 * dy2));
+                if (half < 1)
+                    half = 1;
+                fb_fill_rect(fb, x + rad - (uint32_t)half, y + row,
+                             (uint32_t)(2 * half), 1, r, g, b);
+            }
+        }
+    }
 }
 
 /* ------------------------------------------------------------------- text */

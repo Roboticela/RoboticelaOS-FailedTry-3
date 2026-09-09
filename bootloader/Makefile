@@ -92,6 +92,8 @@ UEFI_SRCS := $(SRC)/main.c \
              $(SRC)/graphics/framebuffer.c \
              $(SRC)/graphics/renderer.c \
              $(SRC)/graphics/progress.c \
+             $(SRC)/keyboard/keyboard.c \
+             $(SRC)/menu/menu.c \
              $(SRC)/font/robofont.c \
              $(SRC)/image/bmp.c \
              $(SRC)/config/config.c \
@@ -216,10 +218,20 @@ image: $(IMAGE_FILES)
 	    --file RoboBoot/logo.bmp:assets/logo.bmp \
 	    --file RoboBoot/boot.cfg:$(BUILD)/boot.cfg
 
+# Second disk for testing the Alt boot picker: same content, different FAT
+# volume label so the picker shows a distinct name.
+image-menu: $(IMAGE_FILES)
+	$(PYTHON) tools/mkfat32.py --output $(BUILD)/robo-disk2.img --size-mb 64 \
+	    --label ROBOTEST2 \
+	    --file EFI/BOOT/BOOTX64.EFI:$(BUILD)/BOOTX64.EFI \
+	    --file RoboBoot/robokernel:$(BUILD)/robokernel \
+	    --file RoboBoot/logo.bmp:assets/logo.bmp \
+	    --file RoboBoot/boot.cfg:$(BUILD)/boot.cfg
+
 CFG_DEBUG ?= 0
 
 $(BUILD)/boot.cfg: | $(BUILD)
-	printf 'kernel=RoboBoot/robokernel\nlogo=RoboBoot/logo.bmp\ntimeout=3\ntest=1\ndebug=$(CFG_DEBUG)\n' > $@
+	printf 'kernel=RoboBoot/robokernel\nlogo=RoboBoot/logo.bmp\ntimeout=3\nmenu=alt\ntest=1\ndebug=$(CFG_DEBUG)\n' > $@
 
 run: image
 	@HEADLESS=0 bash tools/run-qemu.sh $(BUILD)/robo-disk.img

@@ -89,7 +89,8 @@ class Node:
 
 
 class Fat32Image:
-    def __init__(self, size_bytes):
+    def __init__(self, size_bytes, label="ROBOBOOT"):
+        self.label = label
         # filesystem lives inside the ESP partition starting at LBA 2048
         usable = size_bytes - PARTITION_START_LBA * BYTES_PER_SECTOR
         self.total_sectors = usable // BYTES_PER_SECTOR
@@ -139,7 +140,9 @@ class Fat32Image:
         struct.pack_into("<H", bs, 50, 6)      # backup
         bs[66] = 0x29
         struct.pack_into("<I", bs, 67, 0x524F424F)
-        bs[71:82] = b"ROBOBOOT    "
+        # Volume label: 11 bytes, space-padded, uppercase (FAT spec).
+        lab = self.label.upper()[:11].ljust(11)
+        bs[71:82] = lab.encode("ascii", "replace")
         bs[82:90] = b"FAT32   "
         struct.pack_into("<H", bs, 510, 0xAA55)
         self.img[0:512] = bs
@@ -222,6 +225,13 @@ class Fat32Image:
                 self._alloc_dirs(ch, parent_cluster=d.cluster)
         # write this directory's entries
         entries = bytearray()
+        if d.cluster == 2:  # root: volume-label entry (attr 0x08, no cluster)
+            # The UEFI FAT driver reports THIS entry as the volume label;
+            # the BPB label alone is not enough.
+            vlab = bytearray(32)
+            vlab[0:11] = self.label.upper()[:11].ljust(11).encode("ascii", "replace")
+            vlab[11] = 0x08
+            entries += bytes(vlab)
         if d.cluster != 2:  # non-root: '.' and '..'
             dot = bytearray(32)
             dot[0:11] = b".          "
@@ -333,6 +343,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", required=True)
     ap.add_argument("--size-mb", type=int, default=64)
+    ap.add_argument("--label", default="ROBOBOOT",
+                    help="FAT32 volume label (shown in the boot picker)")
     ap.add_argument("--file", action="append", default=[],
                     help="image_path:host_path (repeatable)")
     args = ap.parse_args()
@@ -347,7 +359,7 @@ def main():
     if not files:
         raise SystemExit("no --file given")
 
-    fs = Fat32Image(args.size_mb * 1024 * 1024)
+    fs = Fat32Image(args.size_mb * 1024 * 1024, label=args.label)
     fs.populate(files)
     fsimg = fs.finish()
 

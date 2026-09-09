@@ -9,6 +9,7 @@ void config_defaults(robo_config_t *cfg)
     robostrncpy(cfg->logo_path, sizeof(cfg->logo_path), "RoboBoot/logo.bmp");
     robostrncpy(cfg->initfs_path, sizeof(cfg->initfs_path), "RoboBoot/robo-initfs");
     cfg->timeout_seconds = 3;
+    cfg->menu_mode = ROBO_MENU_ALT;
     cfg->test_mode = false;
     cfg->debug = false;
 }
@@ -74,6 +75,21 @@ static cfg_result_t apply_kv(robo_config_t *cfg, const char *key, const char *va
             return CFG_ERR_SYNTAX;
         cfg->timeout_seconds = (uint32_t)v;
         return CFG_OK;
+    }
+    if (robostreq(key, "menu")) {
+        if (robostreq(val, "alt")) {
+            cfg->menu_mode = ROBO_MENU_ALT;
+            return CFG_OK;
+        }
+        if (robostreq(val, "always")) {
+            cfg->menu_mode = ROBO_MENU_ALWAYS;
+            return CFG_OK;
+        }
+        if (robostreq(val, "none")) {
+            cfg->menu_mode = ROBO_MENU_NONE;
+            return CFG_OK;
+        }
+        return CFG_ERR_SYNTAX;
     }
     if (robostreq(key, "test")) {
         if (robostreq(val, "1")) {

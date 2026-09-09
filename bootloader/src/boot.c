@@ -5,6 +5,8 @@
 #include "graphics/framebuffer.h"
 #include "graphics/renderer.h"
 #include "graphics/progress.h"
+#include "keyboard/keyboard.h"
+#include "menu/menu.h"
 #include "image/bmp.h"
 #include "elf/elf_loader.h"
 #include "memory/memory.h"
@@ -253,9 +255,9 @@ void boot_run(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
         if (g_cfg.debug && !debug_enabled())
             debug_init();
-        debugf("config: kernel='%s' logo='%s' initfs='%s' test=%d debug=%d",
+        debugf("config: kernel='%s' logo='%s' initfs='%s' menu=%d test=%d debug=%d",
                g_cfg.kernel_path, g_cfg.logo_path, g_cfg.initfs_path,
-               (int)g_cfg.test_mode, (int)g_cfg.debug);
+               (int)g_cfg.menu_mode, (int)g_cfg.test_mode, (int)g_cfg.debug);
     }
     ui_stage(BOOT_PCT_CONFIG);
 
@@ -263,6 +265,54 @@ void boot_run(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     load_logo_image(&g_cfg);
     render_boot_frame(&g_fb, g_logo.pixels ? &g_logo : NULL);
     ui_stage(BOOT_PCT_CONFIG); /* redraw bar (logo draw resets it) */
+
+    /* --- Apple-style boot picker (Alt held / Down-F2 tap / menu=always) --- */
+    if (g_cfg.menu_mode != ROBO_MENU_NONE) {
+        bool want_menu = (g_cfg.menu_mode == ROBO_MENU_ALWAYS);
+        if (!want_menu) {
+            debugf("watching for boot key (Alt / Down / F2)...");
+            want_menu = menu_boot_key_requested(400, ui_pump);
+        }
+        if (want_menu) {
+            robo_menu_result_t mr;
+            robo_menu_entry_t *mentries = NULL;
+            uint64_t mcount = 0, msel = 0;
+            EFI_FILE_PROTOCOL *mroot = NULL;
+
+            keyboard_init();
+            mr = menu_run(&g_fb, g_logo.pixels ? &g_logo : NULL,
+                          g_cfg.timeout_seconds, &mentries, &mcount, &msel,
+                          &mroot);
+            debugf("menu result %d (count %u, sel %u)", (int)mr,
+                   (unsigned)mcount, (unsigned)msel);
+
+            if (mr == ROBO_MENU_BOOT_SELECTED) {
+                EFI_HANDLE dev = menu_entry_device_handle(msel);
+                EFI_HANDLE img = NULL;
+                EFI_STATUS ls;
+
+                /* Different volume chosen: chainload its loader via the
+                 * firmware (LoadImage + StartImage) and never come back. */
+                file_close(mroot);
+                ls = file_load_image(dev, L"\\EFI\\BOOT\\BOOTX64.EFI", &img);
+                if (!EFI_ERROR(ls) && img) {
+                    debugf("chainloading selected device...");
+                    ui_stage(BOOT_PCT_DONE);
+                    file_start_image(img);          /* no return on success */
+                    boot_fatal("chainload StartImage failed");
+                    return;
+                }
+                debugf("LoadImage failed (0x%llx); continuing normal boot",
+                       (uint64_t)ls);
+            } else if (mr == ROBO_MENU_ERROR) {
+                boot_fatal("no bootable devices");
+                return;
+            }
+            /* CONTINUE or failed chainload: repaint the splash, keep booting. */
+            render_boot_frame(&g_fb, g_logo.pixels ? &g_logo : NULL);
+            ui_stage(BOOT_PCT_CONFIG);
+        }
+    }
 
     /* --- kernel --- */
     {

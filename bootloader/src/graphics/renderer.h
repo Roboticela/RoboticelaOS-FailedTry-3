@@ -72,4 +72,19 @@ void render_debug_text(fb_t *fb, uint32_t x, uint32_t y, const char *text,
 void render_fit_logo(uint32_t img_w, uint32_t img_h, uint32_t scr_w, uint32_t scr_h,
                      uint32_t *out_w, uint32_t *out_h);
 
+/* Draw the logo centred horizontally with its centre at cy_frac * screen_h,
+ * scaled to at most max_h_frac * screen_h tall (box-filter downscale,
+ * transparency respected). Used for the boot splash and the boot menu. */
+void render_logo_scaled(fb_t *fb, const robo_image_t *img,
+                        double cy_frac, double max_h_frac);
+
+/* Scaled bitmap text (menu titles/labels). scale 1 = the 6x9 base font. */
+void render_text_scaled(fb_t *fb, uint32_t x, uint32_t y, const char *text,
+                        uint32_t scale, uint8_t r, uint8_t g, uint8_t b);
+uint32_t render_text_width(const char *text, uint32_t scale);
+
+/* Capsule-shaped filled round rect (radius = h/2), used by the boot menu. */
+void render_round_rect(fb_t *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                       uint8_t r, uint8_t g, uint8_t b);
+
 #endif /* ROBO_RENDERER_H */

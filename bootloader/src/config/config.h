@@ -15,11 +15,19 @@
 
 #define ROBO_CFG_MAX_PATH 256
 
+/* When to show the Apple-style boot device picker (boot.cfg "menu="). */
+typedef enum {
+    ROBO_MENU_ALT = 0,      /* default: picker when Alt (or F2/Down) is held */
+    ROBO_MENU_ALWAYS,       /* picker on every boot */
+    ROBO_MENU_NONE          /* never show the picker */
+} robo_menu_mode_t;
+
 typedef struct {
     char kernel_path[ROBO_CFG_MAX_PATH];
     char logo_path[ROBO_CFG_MAX_PATH];
     char initfs_path[ROBO_CFG_MAX_PATH];   /* optional; empty = not requested */
-    uint32_t timeout_seconds;              /* 0 = no menu wait (Stage 01: unused) */
+    uint32_t timeout_seconds;              /* picker countdown, seconds */
+    robo_menu_mode_t menu_mode;            /* see robo_menu_mode_t */
     bool test_mode;                        /* test=1: hold boot screen for inspection */
     bool debug;                            /* debug=1: serial diagnostics */
 } robo_config_t;

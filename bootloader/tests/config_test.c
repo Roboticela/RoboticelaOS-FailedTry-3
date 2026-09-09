@@ -29,14 +29,28 @@ int main(void)
     r = config_parse("kernel=RoboBoot/mykernel\n"
                      "logo=RoboBoot/marks.bmp\n"
                      "timeout=7\n"
+                     "menu=always\n"
                      "test=1\n"
                      "debug=1\n", &cfg);
     CHECK(r == CFG_OK, "valid config parses");
     CHECK(robostreq(cfg.kernel_path, "RoboBoot/mykernel"), "kernel path applied");
     CHECK(robostreq(cfg.logo_path, "RoboBoot/marks.bmp"), "logo path applied");
     CHECK(cfg.timeout_seconds == 7, "timeout applied");
+    CHECK(cfg.menu_mode == ROBO_MENU_ALWAYS, "menu=always applied");
     CHECK(cfg.test_mode == true, "test mode on");
     CHECK(cfg.debug == true, "debug on");
+
+    /* menu modes */
+    r = config_parse("menu=none\n", &cfg);
+    CHECK(r == CFG_OK && cfg.menu_mode == ROBO_MENU_NONE, "menu=none applied");
+    r = config_parse("menu=alt\n", &cfg);
+    CHECK(r == CFG_OK && cfg.menu_mode == ROBO_MENU_ALT, "menu=alt applied");
+    r = config_parse("menu=whenever\n", &cfg);
+    CHECK(r == CFG_ERR_SYNTAX, "bad menu value rejected");
+
+    /* menu mode default */
+    config_defaults(&cfg);
+    CHECK(cfg.menu_mode == ROBO_MENU_ALT, "menu default is alt");
 
     /* empty text -> defaults */
     r = config_parse("", &cfg);
